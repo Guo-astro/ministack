@@ -14,6 +14,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Step Functions — retry `StopExecution` after an abort** — an already-aborted execution now returns its original stop date instead of `ValidationException`. A retry preserves the first error/cause and emits no duplicate abort event.
+
 - **Gateway**: reject malformed request-body and aws-chunked framing; preserve account-isolated SQS diagnostic aliases and tombstone-aware peeking.
 - **SES**: validate source/recipient addresses, content-field presence and configuration sets while accepting present empty content and ASCII/Punycode addresses.
 - **Container reaping — one unreadable container no longer stops the sweep** — the boot sweep and the periodic reaper now list containers without inspecting each one, so a container whose inspect fails is skipped instead of leaving every leftover running. Reported by @iot-rocket.
