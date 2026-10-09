@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **IoT — job and job execution events** — completed, canceled and deleted jobs and finished, removed or deleted executions publish to `$aws/events/job/...` and `$aws/events/jobExecution/...` when `UpdateEventConfigurations` enables them. Contributed by @iot-rocket.
 - **IoT — `UpdateJob`** — `PATCH /jobs/{jobId}` updates an `IN_PROGRESS` job's description, presigned URL, rollout, abort, timeout and retry configuration with AWS's checks; running executions keep their timeout. `CreateJob` refuses a bad timeout with the same message. Contributed by @iot-rocket.
 - **Signer — real signatures on the IoT platform** — when ACM holds the key of the profile's certificate, `StartSigningJob` on `AWSIoTDeviceManagement-SHA256-ECDSA` writes AWS's signed document instead of a JSON receipt, and an RSA key fails the job. Without a key the receipt stays and a warning is logged. Contributed by @iot-rocket.
 ### Fixed
