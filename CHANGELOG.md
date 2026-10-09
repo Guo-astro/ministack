@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **CloudFormation — `AWS::Logs::MetricFilter`** — templates with a metric filter failed with `Unrecognized resource types`; the filter now provisions, updates in place and is replaced on a `FilterName` or `LogGroupName` change. Contributed by @iot-rocket.
+
+### Fixed
+- **CloudWatch Logs — `DescribeMetricFilters` by metric** — `metricName` and `metricNamespace` now select the filters that publish that metric, `filterNamePrefix` applies only with `logGroupName`, and `DeleteLogGroup` removes the group's filters. Contributed by @iot-rocket.
 ### Fixed
 - **Cognito — `Username` is the `sub` in pools with `UsernameAttributes`** — `AdminCreateUser` and `SignUp` now use the `sub` as the `Username`, keep the email or phone number as an alias, and refuse a `Username` that is not a sign-in attribute, a differing email or phone attribute and a caller-supplied `sub`. Contributed by @iot-rocket.
 ### Added
