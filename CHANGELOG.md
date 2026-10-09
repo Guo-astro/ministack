@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **IoT — `UpdateJob`** — `PATCH /jobs/{jobId}` updates an `IN_PROGRESS` job's description, presigned URL, rollout, abort, timeout and retry configuration with AWS's checks; running executions keep their timeout. `CreateJob` refuses a bad timeout with the same message. Contributed by @iot-rocket.
 - **Signer — real signatures on the IoT platform** — when ACM holds the key of the profile's certificate, `StartSigningJob` on `AWSIoTDeviceManagement-SHA256-ECDSA` writes AWS's signed document instead of a JSON receipt, and an RSA key fails the job. Without a key the receipt stays and a warning is logged. Contributed by @iot-rocket.
 ### Fixed
 - **Error envelope Content-Types now match AWS per protocol** — real AWS picks an error's `Content-Type` from the service's protocol, and services disagree: `application/x-amz-json-1.1` for jsonVersion-1.1 services (Kinesis, KMS, Secrets Manager, Athena, Cognito, EventBridge, WAFv2, CloudWatch Logs) vs `1.0` (DynamoDB, Step Functions, SQS); `text/xml` for query services (IAM, SNS, RDS, CloudFormation) and `text/xml;charset=UTF-8` for EC2; `application/json` for rest-json (Lambda, AppSync, API Gateway) vs `application/x-amz-json-1.1` for SESv2; `text/xml` for rest-xml except S3's `application/xml`. Errors are now normalized at dispatch using the botocore service model plus wire-captured quirks. Evidence: real AWS wire captures diffed per probe (7/28 → 23/28 probes conforming).
