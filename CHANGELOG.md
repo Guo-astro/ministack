@@ -7,6 +7,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Cognito — `Username` is the `sub` in pools with `UsernameAttributes`** — `AdminCreateUser` and `SignUp` now use the `sub` as the `Username`, keep the email or phone number as an alias, and refuse a `Username` that is not a sign-in attribute, a differing email or phone attribute and a caller-supplied `sub`. Contributed by @iot-rocket.
 ### Added
 - **IoT — job and job execution events** — completed, canceled and deleted jobs and finished, removed or deleted executions publish to `$aws/events/job/...` and `$aws/events/jobExecution/...` when `UpdateEventConfigurations` enables them. Contributed by @iot-rocket.
 - **IoT — `UpdateJob`** — `PATCH /jobs/{jobId}` updates an `IN_PROGRESS` job's description, presigned URL, rollout, abort, timeout and retry configuration with AWS's checks; running executions keep their timeout. `CreateJob` refuses a bad timeout with the same message. Contributed by @iot-rocket.
