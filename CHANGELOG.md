@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **IAM / CloudFormation — user and role tag keys** — IAM user and role tag keys now compare without case while preserving their spelling. Create and tag operations reject duplicate keys, untag operations match keys regardless of case, and CloudFormation validates duplicate keys and merges stack tags accordingly. User tag updates also compare keys without case. Other resource types retain case-sensitive tag handling.
 - **Signer — signing material checks in `PutSigningProfile` under `AUTH=true`** — `PutSigningProfile` accepted any certificate ARN, or no `signingMaterial` at all, on every platform; with `AUTH=true` the IoT and FreeRTOS platforms now refuse a profile without `signingMaterial` and a certificate ARN that is malformed, in another region or account, unknown to ACM or not issued, and the Lambda and Notation platforms refuse any `signingMaterial`, with AWS's errors. Contributed by @iot-rocket.
 
 ### Added
