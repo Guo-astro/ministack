@@ -88,7 +88,7 @@ import uuid
 import weakref
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
-from urllib.parse import parse_qsl, parse_qs
+from urllib.parse import parse_qs, parse_qsl
 
 from ministack.core.arn import ArnParseError, parse_arn
 from ministack.core.iam_evaluator import EvalContext, evaluate, parse_policy_document
