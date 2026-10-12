@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **IoT — `TagResource`, `UntagResource` and `ListTagsForResource`** — the three operations answered `Unsupported IoT path`, so the tags the Create calls accept could not be read back. They now work on thing types, thing groups, policies, topic rules, jobs, job templates, CA certificates, provisioning templates and domain configurations with AWS's limits and errors, Create calls and CloudFormation `Tags` write the same tags, and deleting a resource drops them. Contributed by @iot-rocket.
 ### Fixed
 
 - **IoT — deleting things, certificates, policies and thing types still in use** — `DeleteThing` detached a thing's certificates and deleted it, and `DeleteCertificate` refused only an `ACTIVE` certificate. Now `DeleteThing` refuses a thing with a certificate attached, `DeleteCertificate` refuses a certificate with things attached and, without `forceDelete`, one with policies attached (`forceDelete` detaches them), `DeletePolicy` refuses a policy with non-default versions and `DeleteThingType` one that things still use, all with AWS's messages. Contributed by @iot-rocket.
