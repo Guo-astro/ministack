@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **IoT — rule SQL `principal()` and `traceid()`** — both resolved to Undefined; `principal()` now returns the client certificate id for mTLS, the caller's `GetCallerIdentity` `UserId` for HTTP Publish and SigV4 WebSocket sessions (also their lifecycle events' `principalIdentifier`) and the rule role's session for a republish, and `traceid()` returns a per-message id that the errorAction document carries as `cloudwatchTraceId`. Contributed by @iot-rocket.
 ### Added
 
 - **IoT — retained messages** — `GetRetainedMessage` and `ListRetainedMessages` answered 501 `not yet implemented`; they now return the broker's retained messages (newest first, paged by `maxResults` and `nextToken`, with the user properties of an MQTT 5 publish), and a `PERSIST_STATE=1` restart keeps each message's `lastModifiedTime` and user properties. Contributed by @iot-rocket.
