@@ -7245,6 +7245,306 @@ def test_iot_jitr_sni_only_ca_in_two_accounts_registers_where_the_name_points():
 
 
 # ----------------------------------------------------------------------
+# IoT policy evaluation on certificate sessions (AUTH=true)
+# ----------------------------------------------------------------------
+
+_POLICY_ARN = f"arn:aws:iot:{_TEST_REGION}:{_JITR_ACCOUNT}"
+
+
+async def _policy_device(iot_module, policies=(), thing=None, common_name=None) -> str:
+    """Register an ACTIVE device certificate in the test scope, attach one policy
+    per statement list in ``policies`` and the thing ``thing``; returns its id."""
+    pytest.importorskip("cryptography")
+    from ministack.core.responses import set_request_account_id, set_request_region
+    from ministack.core.x509_utils import generate_ca, sign_leaf_certificate
+
+    set_request_account_id(_JITR_ACCOUNT)
+    set_request_region(_TEST_REGION)
+    ca_pem, ca_key_pem = generate_ca(common_name=_unique("policy-ca"))
+    cert_pem = sign_leaf_certificate(
+        ca_cert_pem=ca_pem, ca_key_pem=ca_key_pem, common_name=common_name or _unique("device")
+    )[0]
+    registered = {"certificatePem": cert_pem, "status": "ACTIVE"}
+    status, _, body = await iot_module.handle_request(
+        "POST", "/certificate/register-no-ca", {}, json.dumps(registered).encode(), {}
+    )
+    assert status == 200
+    cert = json.loads(body)
+    for statements in policies:
+        name = _unique("policy")
+        doc = json.dumps({"Version": "2012-10-17", "Statement": statements})
+        for method, path, payload in (
+            ("POST", f"/policies/{name}", {"policyDocument": doc}),
+            ("PUT", f"/target-policies/{name}", {"target": cert["certificateArn"]}),
+        ):
+            assert (await iot_module.handle_request(method, path, {}, json.dumps(payload).encode(), {}))[0] == 200
+    if thing:
+        principal = {"x-amzn-principal": cert["certificateArn"]}
+        assert (await iot_module.handle_request("PUT", f"/things/{thing}/principals", principal, b"", {}))[0] == 200
+    return cert["certificateId"]
+
+
+async def _policy_connect(cert_id, client_id, mqtt5=False, **connect):
+    """CONNECT a session under ``cert_id``: (session, sent messages, keep open)."""
+    send, sent = _mock_send()
+    session = _IoTWSSession(send, _JITR_ACCOUNT, _TEST_REGION, cert_id)
+    session.certificate_id = cert_id
+    body = _build_mqtt5_connect_body(client_id) if mqtt5 else _build_connect_body(client_id, **connect)
+    return session, sent, await session.handle_packet(PKT_CONNECT, 0, body)
+
+
+def test_mqtt_connect_evaluates_certificate_policies(monkeypatch):
+    """Under AUTH=true a certificate session connects only when an attached
+    policy allows iot:Connect on its client id and none denies it. A refusal
+    closes without a CONNACK on 3.1.1 and answers 0x87 on MQTT 5, stores no
+    session, publishes no will and publishes a connect_failed event."""
+    import ministack.app as _app
+    from ministack.services import iot as iot_module
+
+    monkeypatch.setattr(_app, "AUTH", True)
+    wills, failed, certs = [], [], {}
+
+    async def _will(topic, payload, qos):
+        wills.append(topic)
+
+    async def _failed(topic, payload, qos):
+        event = json.loads(payload)
+        failed.append((event["clientId"], event["connectFailureReason"], event["principalIdentifier"], sorted(event)))
+
+    async def _run():
+        bare = certs["bare"] = await _policy_device(iot_module)
+        only = certs["only"] = await _policy_device(
+            iot_module, [[{"Effect": "Allow", "Action": "iot:Connect", "Resource": f"{_POLICY_ARN}:client/good"}]]
+        )
+        denied = certs["denied"] = await _policy_device(iot_module, [
+            [{"Effect": "Allow", "Action": "iot:Connect", "Resource": "*"}],
+            [{"Effect": "Deny", "Action": "iot:Connect", "Resource": f"{_POLICY_ARN}:client/blocked"}],
+        ])
+        await subscribe(_JITR_ACCOUNT, "will/#", _will)
+        await subscribe(_JITR_ACCOUNT, "$aws/events/presence/connect_failed/+", _failed)
+        cases = {
+            "no policy": (bare, "bare", {"clean_session": False, "will_flag": True, "will_topic": "will/bare"}),
+            "no policy, MQTT 5": (bare, "bare", {"mqtt5": True}),
+            "allowed client": (only, "good", {}),
+            "other client": (only, "other", {}),
+            "denied client": (denied, "blocked", {}),
+            "other client of the deny": (denied, "fine", {}),
+            "no certificate": (None, "anonymous", {}),
+        }
+        outcomes = {}
+        for label, (cert_id, client_id, connect) in cases.items():
+            session, sent, keep = await _policy_connect(cert_id, client_id, **connect)
+            await session.cleanup()
+            outcomes[label] = (keep, _parse_connack(sent)[1])
+        monkeypatch.setattr(_app, "AUTH", False)
+        session, sent, keep = await _policy_connect(bare, "bare")
+        await session.cleanup()
+        outcomes["no policy, AUTH=false"] = (keep, _parse_connack(sent)[1])
+        return outcomes
+
+    try:
+        outcomes = asyncio.run(_run())
+        stored = (_JITR_ACCOUNT, _TEST_REGION, "bare") in _persistent_sessions
+    finally:
+        iot_module.reset()
+        iot_module.broker_reset()
+    assert outcomes == {
+        "no policy": (False, None),
+        "no policy, MQTT 5": (False, 0x87),
+        "allowed client": (True, 0),
+        "other client": (False, None),
+        "denied client": (False, None),
+        "other client of the deny": (True, 0),
+        "no certificate": (True, 0),
+        "no policy, AUTH=false": (True, 0),
+    }
+    assert wills == []
+    assert not stored
+    keys = ["clientId", "connectFailureReason", "eventType", "ipAddress", "principalIdentifier",
+            "sessionIdentifier", "timestamp"]
+    assert failed == [
+        (client_id, "AUTHORIZATION_FAILED", certs[cert], keys)
+        for client_id, cert in (("bare", "bare"), ("bare", "bare"), ("other", "only"), ("blocked", "denied"))
+    ]
+
+
+def test_mqtt_connect_resolves_policy_variables(monkeypatch):
+    """Thing variables resolve only when the client id is a thing attached to
+    the certificate; the common name comes from the certificate subject."""
+    import ministack.app as _app
+    from ministack.core.responses import request_scope
+    from ministack.services import iot as iot_module
+
+    monkeypatch.setattr(_app, "AUTH", True)
+    thing, other, name = _unique("thing"), _unique("other"), _unique("cn")
+
+    async def _run():
+        with request_scope(_JITR_ACCOUNT, _TEST_REGION):
+            for t in (thing, other):
+                assert (await iot_module.handle_request("POST", f"/things/{t}", {}, b"{}", {}))[0] == 200
+        by_thing = await _policy_device(iot_module, [[{
+            "Effect": "Allow", "Action": "iot:Connect",
+            "Resource": f"{_POLICY_ARN}:client/${{iot:Connection.Thing.ThingName}}",
+        }]], thing=thing)
+        attached = await _policy_device(iot_module, [[{
+            "Effect": "Allow", "Action": "iot:Connect", "Resource": "*",
+            "Condition": {"Bool": {"iot:Connection.Thing.IsAttached": "true"}},
+        }]], thing=thing)
+        by_name = await _policy_device(iot_module, [[{
+            "Effect": "Allow", "Action": "iot:Connect",
+            "Resource": f"{_POLICY_ARN}:client/${{iot:Certificate.Subject.CommonName}}",
+        }]], common_name=name)
+        outcomes = []
+        for cert_id, client_id in (
+            (by_thing, thing), (by_thing, other), (by_thing, "nothing"),
+            (attached, thing), (attached, other),
+            (by_name, name), (by_name, "nothing"),
+        ):
+            session, _sent, keep = await _policy_connect(cert_id, client_id)
+            await session.cleanup()
+            outcomes.append(keep)
+        return outcomes
+
+    try:
+        outcomes = asyncio.run(_run())
+    finally:
+        iot_module.reset()
+        iot_module.broker_reset()
+    assert outcomes == [True, False, False, True, False, True, False]
+
+
+def _sent_packets(sent):
+    """(packet type, body) of every packet a session sent."""
+    packets = []
+    for msg in sent:
+        data = msg["bytes"]
+        _length, off = _decode_remaining_length(data, 1)
+        packets.append((data[0] >> 4, data[off:]))
+    return packets
+
+
+def test_mqtt_publish_subscribe_receive_evaluate_policies(monkeypatch):
+    """Under AUTH=true iot:Publish (with iot:RetainPublish for a retained
+    message or will), iot:Subscribe and iot:Receive are evaluated per packet.
+    A refused PUBLISH or SUBSCRIBE closes a 3.1.1 session (CLIENT_ERROR);
+    MQTT 5 answers PUBACK 0x87, DISCONNECT 0x87 for QoS 0 (AUTH_ERROR), or
+    0x87 for the one topic filter, which the subscribed event leaves out.
+    A message the subscriber may not receive is dropped."""
+    import ministack.app as _app
+    from ministack.services import iot as iot_module
+
+    monkeypatch.setattr(_app, "AUTH", True)
+    events, received = [], []
+
+    async def _received(topic, payload, qos):
+        received.append(payload)
+
+    async def _event(topic, payload, qos):
+        event = json.loads(payload)
+        detail = ("disconnectReason", "topics", "connectFailureReason")
+        events.append((event["eventType"], event["clientId"], next(event[k] for k in detail if k in event)))
+
+    def v3_publish(topic, packet_id):
+        return _encode_string(topic) + struct.pack("!H", packet_id) + b"x"
+
+    async def _run():
+        cert = await _policy_device(iot_module, [[
+            {"Effect": "Allow", "Action": "iot:Connect", "Resource": "*"},
+            {"Effect": "Allow", "Action": "iot:Publish",
+             "Resource": [f"{_POLICY_ARN}:topic/pub/${{iot:ClientId}}", f"{_POLICY_ARN}:topic/sub/*"]},
+            {"Effect": "Allow", "Action": "iot:RetainPublish", "Resource": f"{_POLICY_ARN}:topic/sub/ret"},
+            {"Effect": "Allow", "Action": "iot:Subscribe", "Resource": f"{_POLICY_ARN}:topicfilter/sub/#"},
+            {"Effect": "Allow", "Action": "iot:Receive", "Resource": f"{_POLICY_ARN}:topic/sub/yes"},
+        ]])
+        for event_filter in ("presence/disconnected/+", "presence/connect_failed/+", "subscriptions/subscribed/+"):
+            await subscribe(_JITR_ACCOUNT, f"$aws/events/{event_filter}", _event)
+        await subscribe(_JITR_ACCOUNT, "sub/yes", _received)
+        outcomes = {}
+
+        async def _outcome(label, client_id, pkt_type, flags, body, mqtt5=False):
+            session, sent, _keep = await _policy_connect(cert, client_id, mqtt5=mqtt5)
+            sent.clear()
+            keep = await session.handle_packet(pkt_type, flags, body)
+            await session.cleanup()
+            outcomes[label] = (keep, [(t, b.hex()) for t, b in _sent_packets(sent)])
+
+        await _outcome("3.1.1 publish own topic", "c3", PKT_PUBLISH, 0x02, v3_publish("pub/c3", 1))
+        await _outcome("3.1.1 publish other topic", "c3", PKT_PUBLISH, 0x02, v3_publish("pub/other", 2))
+        await _outcome("3.1.1 publish retained, no RetainPublish", "c3", PKT_PUBLISH, 0x03, v3_publish("sub/x", 3))
+        await _outcome("3.1.1 publish retained with RetainPublish", "c3", PKT_PUBLISH, 0x03, v3_publish("sub/ret", 4))
+        await _outcome("3.1.1 subscribe allowed", "c3", PKT_SUBSCRIBE, 0x02,
+                       _build_subscribe_body(5, [("sub/#", 1)]))
+        await _outcome("3.1.1 subscribe one refused", "c3", PKT_SUBSCRIBE, 0x02,
+                       _build_subscribe_body(6, [("sub/#", 1), ("other/#", 1)]))
+        await _outcome("5 publish QoS 1 other topic", "c5", PKT_PUBLISH, 0x02,
+                       _build_mqtt5_publish_body("pub/other", b"x", qos=1, packet_id=7), mqtt5=True)
+        await _outcome("5 publish QoS 0 other topic", "c5", PKT_PUBLISH, 0x00,
+                       _build_mqtt5_publish_body("pub/other", b"x"), mqtt5=True)
+        await _outcome("5 subscribe one refused", "c5", PKT_SUBSCRIBE, 0x02,
+                       _build_mqtt5_subscribe_body(8, "sub/#", 1)
+                       + _encode_string("other/#") + b"\x01", mqtt5=True)
+        await _outcome("5 subscribe all refused", "c5", PKT_SUBSCRIBE, 0x02,
+                       _build_mqtt5_subscribe_body(10, "other/#", 1), mqtt5=True)
+
+        session, sent, keep = await _policy_connect(
+            cert, "w3", will_flag=True, will_topic="sub/x", will_retain=True, will_message=b"bye"
+        )
+        await session.cleanup()
+        outcomes["3.1.1 retained will, no RetainPublish"] = (keep, _sent_packets(sent))
+
+        session, sent, _keep = await _policy_connect(
+            cert, "w4", will_flag=True, will_topic="sub/yes", will_message=b"bye"
+        )
+        await session.handle_packet(PKT_SUBSCRIBE, 0x02, _build_subscribe_body(11, [("sub/#", 0)]))
+        sent.clear()
+        keep = await session.handle_packet(PKT_PUBLISH, 0x02, v3_publish("pub/other", 12))
+        await session.cleanup()
+        outcomes["3.1.1 refused publish, own will"] = (keep, _sent_packets(sent))
+
+        subscriber, sent, _keep = await _policy_connect(cert, "s3")
+        await subscriber.handle_packet(PKT_SUBSCRIBE, 0x02, _build_subscribe_body(9, [("sub/#", 0)]))
+        sent.clear()
+        for topic in ("sub/yes", "sub/no", "sub/yes"):
+            await publish(_JITR_ACCOUNT, topic, topic.encode())
+        outcomes["receive"] = [frame[0] for frame in _extract_publish_frames(sent)]
+        await subscriber.cleanup()
+        return outcomes
+
+    try:
+        outcomes = asyncio.run(_run())
+    finally:
+        iot_module.reset()
+        iot_module.broker_reset()
+    assert outcomes == {
+        "3.1.1 publish own topic": (True, [(PKT_PUBACK, "0001")]),
+        "3.1.1 publish other topic": (False, []),
+        "3.1.1 publish retained, no RetainPublish": (False, []),
+        "3.1.1 publish retained with RetainPublish": (True, [(PKT_PUBACK, "0004")]),
+        "3.1.1 subscribe allowed": (True, [(PKT_SUBACK, "000501")]),
+        "3.1.1 subscribe one refused": (False, []),
+        "5 publish QoS 1 other topic": (True, [(PKT_PUBACK, "00078700")]),
+        "5 publish QoS 0 other topic": (False, [(PKT_DISCONNECT, "8700")]),
+        "5 subscribe one refused": (True, [(PKT_SUBACK, "0008000187")]),
+        "5 subscribe all refused": (True, [(PKT_SUBACK, "000a0087")]),
+        "3.1.1 retained will, no RetainPublish": (False, []),
+        "3.1.1 refused publish, own will": (False, []),
+        "receive": ["sub/yes", "sub/yes"],
+    }
+    assert received == [b"bye", b"sub/yes", b"sub/yes"]
+    lost, refused = ("disconnected", "c3", "CONNECTION_LOST"), ("disconnected", "c3", "CLIENT_ERROR")
+    assert events == [
+        lost, refused, refused, lost, ("subscribed", "c3", ["sub/#"]), lost, refused,
+        ("disconnected", "c5", "CONNECTION_LOST"),
+        ("disconnected", "c5", "AUTH_ERROR"),
+        ("subscribed", "c5", ["sub/#"]), ("disconnected", "c5", "CONNECTION_LOST"),
+        ("disconnected", "c5", "CONNECTION_LOST"),
+        ("connect_failed", "w3", "AUTHORIZATION_FAILED"),
+        ("subscribed", "w4", ["sub/#"]), ("disconnected", "w4", "CLIENT_ERROR"),
+        ("subscribed", "s3", ["sub/#"]), ("disconnected", "s3", "CONNECTION_LOST"),
+    ]
+
+
+# ----------------------------------------------------------------------
 # Registry events ($aws/events/...) gated by UpdateEventConfigurations
 # ----------------------------------------------------------------------
 
