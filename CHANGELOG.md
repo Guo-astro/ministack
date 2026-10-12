@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **IoT — republish inside the rule's own topic filter** — `CreateTopicRule` and `ReplaceTopicRule` accepted a `republish` action whose topic the rule's `FROM` filter matches, so the rule fed on its own output; they now refuse it with AWS's `InvalidRequestException`, and an `AWS::IoT::TopicRule` with such an action fails its stack. Contributed by @iot-rocket.
 ### Added
 
 - **IoT — `TagResource`, `UntagResource` and `ListTagsForResource`** — the three operations answered `Unsupported IoT path`, so the tags the Create calls accept could not be read back. They now work on thing types, thing groups, policies, topic rules, jobs, job templates, CA certificates, provisioning templates and domain configurations with AWS's limits and errors, Create calls and CloudFormation `Tags` write the same tags, and deleting a resource drops them. Contributed by @iot-rocket.
