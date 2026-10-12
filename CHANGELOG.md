@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **IoT — `ListJobExecutionsForJob`** — `GET /jobs/{jobId}/things` answered 400 `Unsupported IoT path`; it now lists every execution of the job, earlier ones of a rejoined thing included, most recently updated first, with the `status` filter and `maxResults` / `nextToken` paging. Contributed by @iot-rocket.
+- **IoT — `DeleteJobExecution`** — `DELETE /things/{thingName}/jobs/{jobId}/executionNumber/{executionNumber}` answered 400 `Unsupported IoT path`; it now deletes the execution (an `IN_PROGRESS` one only with `force`), drops it from the job's lists and counts, completes the job when only finished executions are left, and publishes the `deleted` job execution event and the thing's `jobs/notify` topics; a `CONTINUOUS` job's thing left with no execution gets none back until it leaves the group, which leaves a `REMOVED` execution 1. Contributed by @iot-rocket.
 ### Fixed
 
 - **CloudFormation — `AWS::Logs::LogGroup` delete** — a stack delete or a `LogGroupName` replacement removed only the group record, so a metric filter or resource policy added through the Logs API stayed and came back with a new group of the same name; the group is now deleted through `DeleteLogGroup`. Contributed by @iot-rocket.
