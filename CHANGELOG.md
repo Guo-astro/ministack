@@ -9,6 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **IoT — `RegisterCertificate` under an inactive CA** — a certificate issued by a CA that is not `ACTIVE` registered anyway; it is now refused with `CertificateStateException`, with or without `caCertificatePem`. An unregistered CA and a CA that did not issue the certificate are refused with AWS's codes and messages. Contributed by @iot-rocket.
 - **IoT — rule SQL `principal()` and `traceid()`** — both resolved to Undefined; `principal()` now returns the client certificate id for mTLS, the caller's `GetCallerIdentity` `UserId` for HTTP Publish and SigV4 WebSocket sessions (also their lifecycle events' `principalIdentifier`) and the rule role's session for a republish, and `traceid()` returns a per-message id that the errorAction document carries as `cloudwatchTraceId`. Contributed by @iot-rocket.
 ### Added
 
