@@ -9,6 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **IoT — retained messages** — `GetRetainedMessage` and `ListRetainedMessages` answered 501 `not yet implemented`; they now return the broker's retained messages (newest first, paged by `maxResults` and `nextToken`, with the user properties of an MQTT 5 publish), and a `PERSIST_STATE=1` restart keeps each message's `lastModifiedTime` and user properties. Contributed by @iot-rocket.
 - **IoT — `ListJobExecutionsForJob`** — `GET /jobs/{jobId}/things` answered 400 `Unsupported IoT path`; it now lists every execution of the job, earlier ones of a rejoined thing included, most recently updated first, with the `status` filter and `maxResults` / `nextToken` paging. Contributed by @iot-rocket.
 - **IoT — `DeleteJobExecution`** — `DELETE /things/{thingName}/jobs/{jobId}/executionNumber/{executionNumber}` answered 400 `Unsupported IoT path`; it now deletes the execution (an `IN_PROGRESS` one only with `force`), drops it from the job's lists and counts, completes the job when only finished executions are left, and publishes the `deleted` job execution event and the thing's `jobs/notify` topics; a `CONTINUOUS` job's thing left with no execution gets none back until it leaves the group, which leaves a `REMOVED` execution 1. Contributed by @iot-rocket.
 ### Fixed
