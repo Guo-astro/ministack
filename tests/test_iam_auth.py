@@ -1359,7 +1359,7 @@ class TestCombineResourcePolicy:
 
     _USER = "arn:aws:iam::000000000000:user/u"
 
-    def _decide(self, identity, principal, effect="Allow", owner="000000000000", caller=_USER):
+    def _decide(self, identity, principal, effect="Allow", owner="000000000000", caller=_USER, limits=()):
         from ministack.core.iam_evaluator import combine_resource_policy
 
         ctx = EvalContext(principal_arn=caller, principal_type="User", principal_account="000000000000",
@@ -1367,7 +1367,7 @@ class TestCombineResourcePolicy:
                           region="us-east-1")
         policy = {"Statement": [{"Effect": effect, "Principal": {"AWS": principal},
                                  "Action": "sqs:*", "Resource": "*"}]}
-        return combine_resource_policy(EvalResult(identity, caller), ctx, policy, owner).decision
+        return combine_resource_policy(EvalResult(identity, caller), ctx, policy, owner, limits=limits).decision
 
     @pytest.mark.parametrize("identity,principal,effect,owner,expected", [
         ("ImplicitDeny", _USER, "Allow", "000000000000", "Allow"),
@@ -1388,6 +1388,25 @@ class TestCombineResourcePolicy:
         session = "arn:aws:sts::000000000000:assumed-role/r/s"
         assert self._decide("ImplicitDeny", "arn:aws:iam::000000000000:role/app/r", caller=session) == "Allow"
         assert self._decide("ImplicitDeny", "arn:aws:iam::000000000000:role/x", caller=session) == "ImplicitDeny"
+
+    _SESSION = "arn:aws:sts::000000000000:assumed-role/r/s"
+
+    @pytest.mark.parametrize("caller,principal,limit_action,expected", [
+        (_USER, _USER, "sqs:ListQueues", "Allow"),
+        (_USER, "*", "sqs:ListQueues", "ImplicitDeny"),
+        (_SESSION, _SESSION, "sqs:ListQueues", "Allow"),
+        (_SESSION, "arn:aws:iam::000000000000:role/r", "sqs:ListQueues", "ImplicitDeny"),
+        (_SESSION, "arn:aws:iam::000000000000:role/r", "sqs:SendMessage", "Allow"),
+        ("arn:aws:sts::000000000000:federated-user/f", "arn:aws:sts::000000000000:federated-user/f",
+         "sqs:ListQueues", "ImplicitDeny"),
+    ])
+    def test_limits_narrow_a_resource_allow_unless_it_names_the_user_or_session(
+            self, caller, principal, limit_action, expected):
+        from ministack.core.iam_evaluator import parse_policy_document
+
+        limit = [parse_policy_document({"Statement": [
+            {"Effect": "Allow", "Action": limit_action, "Resource": "*"}]})]
+        assert self._decide("ImplicitDeny", principal, caller=caller, limits=(limit,)) == expected
 @contextlib.contextmanager
 def _iam_user(name, tags=()):
     """A stored IAM user with one access key; yields the key and a setter for its inline policy."""

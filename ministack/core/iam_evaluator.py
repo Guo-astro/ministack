@@ -696,9 +696,21 @@ def _names_caller(principal: Any, caller_arn: str) -> bool:
                and _principal_matches({"AWS": p}, caller_arn) for p in principal)
 
 
+def _names_caller_directly(principal: Any, caller_arn: str) -> bool:
+    """Whether a statement Principal names the caller's own IAM user or role-session ARN, which no limit narrows."""
+    if not re.fullmatch(r"arn:aws[a-z-]*:(iam::\d{12}:user/.+|sts::\d{12}:assumed-role/.+)", caller_arn):
+        return False
+    if isinstance(principal, dict):
+        principal = principal.get("AWS", [])
+    if isinstance(principal, str):
+        principal = [principal]
+    return caller_arn in principal
+
+
 def evaluate_resource_policy(doc: str | dict | None, ctx: EvalContext,
                              service: str | None = None,
-                             named_only: bool = False) -> EvalResult:
+                             named_only: bool = False,
+                             direct_only: bool = False) -> EvalResult:
     """Evaluate a resource-based policy for the principal in *ctx*.
 
     Such a document names the principals it applies to, so a statement counts
@@ -723,7 +735,10 @@ def evaluate_resource_policy(doc: str | dict | None, ctx: EvalContext,
         if not isinstance(stmt, dict):
             continue
         principal = stmt.get("Principal", {})
-        if named_only:
+        if direct_only:
+            if _names_caller_directly(principal, ctx.principal_arn):
+                applicable.append(stmt)
+        elif named_only:
             if _names_caller(principal, ctx.principal_arn):
                 applicable.append(stmt)
         elif isinstance(principal, dict):
@@ -739,11 +754,13 @@ def evaluate_resource_policy(doc: str | dict | None, ctx: EvalContext,
 
 def combine_resource_policy(identity: EvalResult, ctx: EvalContext,
                             policy: str | dict | None, owner_account: str | None,
-                            required: bool = False) -> EvalResult:
+                            required: bool = False,
+                            limits: tuple = ()) -> EvalResult:
     """Combine an identity decision with the resource's own policy: a Deny in either wins."""
     # In the owner's account an Allow in either suffices, but a resource statement naming
     # only the account delegates to identity policies; across accounts both must allow.
     # With *required* (a KMS key policy) the resource policy must allow in the owner's account too.
+    # *limits* (boundary, session policies) narrow a resource Allow unless it names the user or session itself.
     if identity.decision == "Deny":
         return identity
     resource = evaluate_resource_policy(policy, ctx)
@@ -756,7 +773,11 @@ def combine_resource_policy(identity: EvalResult, ctx: EvalContext,
         return identity
     if same_account and resource.decision == "Allow":
         named = evaluate_resource_policy(policy, ctx, named_only=True)
-        if named.decision == "Allow":
+        within_limits = all(_first_match(ctx, [stmt for stmts in layer for stmt in stmts], "Allow")
+                            for layer in limits)
+        if named.decision == "Allow" and (
+                within_limits
+                or evaluate_resource_policy(policy, ctx, direct_only=True).decision == "Allow"):
             return named
     return resource if identity.decision == "Allow" else identity
 
@@ -1405,10 +1426,11 @@ def enforce(access_key_id: str, iam_action: str, service: str,
         principal_keys=principal.keys,
     )
 
-    result = evaluate(ctx, principal.policies)
+    result = evaluate(ctx, principal.policies, *principal.limits)
     found = _resource_policy(service, resource_arn)
     if found is not None:
-        result = combine_resource_policy(result, ctx, *found, required=service in _POLICY_REQUIRED)
+        result = combine_resource_policy(result, ctx, *found, required=service in _POLICY_REQUIRED,
+                                         limits=principal.limits)
 
     if result.decision == "Allow":
         return None
