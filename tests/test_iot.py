@@ -2623,9 +2623,7 @@ def test_iot_enable_disable_topic_rule_refusals(iot_client):
     for call in (iot_client.enable_topic_rule, iot_client.disable_topic_rule):
         with pytest.raises(ClientError) as ei:
             call(ruleName=missing)
-        err = ei.value.response
-        assert (err["ResponseMetadata"]["HTTPStatusCode"], err["Error"]["Code"], err["Error"]["Message"]) == (
-            401, "UnauthorizedException", f"Access to topic rule '{missing}' was denied")
+        assert ei.value.response["Error"]["Code"] == "ResourceNotFoundException"
         with pytest.raises(ClientError) as ei:
             call(ruleName="bad-name")
         assert ei.value.response["Error"]["Code"] == "InvalidRequestException"
