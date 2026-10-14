@@ -1626,6 +1626,8 @@ def _build_simulate_results_real(actions, resource_arn, principal_arn,
                 action=action,
                 resource_arn=resource_arn,
                 region=get_region(),
+                source_ip="127.0.0.1",
+                secure_transport=False,
             )
             result = evaluate(ctx, policies)
             raw = result.decision

@@ -25,6 +25,9 @@ from typing import Any
 
 logger = logging.getLogger("ministack")
 
+_request_origin: contextvars.ContextVar[tuple[str, bool]] = contextvars.ContextVar(
+    "ministack_request_origin", default=("127.0.0.1", False))
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -49,11 +52,12 @@ class EvalContext:
     action: str  # "s3:PutObject"
     resource_arn: str  # "*" until per-service resource ARN construction
     region: str
-    source_ip: str = "127.0.0.1"
-    secure_transport: bool = False
+    source_ip: str = field(default_factory=lambda: _request_origin.get()[0])
+    secure_transport: bool = field(default_factory=lambda: _request_origin.get()[1])
     request_tags: dict[str, str] = field(default_factory=dict)
     tag_keys: list[str] = field(default_factory=list)
     service_context: dict[str, Any] = field(default_factory=dict)
+    principal_keys: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -70,6 +74,7 @@ class PrincipalInfo:
     type: str  # "User", "AssumedRole", "Root"
     account: str
     policies: list[list[ParsedStatement]] | None  # None = root (allow-all)
+    keys: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -223,6 +228,8 @@ def _resolve_condition_key(key: str, ctx: EvalContext) -> Any:
         # role conditions its S3 grant on this key, so leaving it unresolved
         # denied every `cdk deploy` under AUTH=true.
         return _account_from_arn(ctx.resource_arn) or ctx.principal_account
+    if k in ctx.principal_keys:
+        return ctx.principal_keys[k]
     if k in ctx.service_context:
         return ctx.service_context[k]
     if k == "aws:principalorgid":
@@ -636,6 +643,11 @@ def pin_request_caller(headers: dict, query_params: dict | None = None) -> None:
     _request_caller_arn.set(request_caller_arn(headers, query_params))
 
 
+def pin_request_origin(source_ip: str, secure_transport: bool) -> None:
+    """Remember the caller's address and transport for this request's policy checks."""
+    _request_origin.set((source_ip, secure_transport))
+
+
 def caller_arn() -> str:
     """The pinned caller ARN, or the caller account's root ARN."""
     from ministack.core.responses import get_account_id
@@ -1042,6 +1054,31 @@ def _is_root_key(access_key_id: str) -> bool:
     return is_root_access_key(access_key_id)
 
 
+def _principal_keys(credential: ResolvedCredential) -> dict[str, Any]:
+    """The condition keys that describe the caller, keyed in lower case."""
+    from ministack.services import iam as iam_svc
+    from ministack.services import sts as sts_svc
+
+    keys: dict[str, Any] = {"aws:userid": credential.principal_id}
+    entity = {}
+    if credential.principal_type == "User":
+        keys["aws:username"] = credential.principal_name
+        entity = iam_svc._users.get_scoped(credential.account_id, None, credential.principal_name)
+    elif credential.principal_type == "AssumedRole":
+        entity = iam_svc._roles.get_scoped(
+            credential.account_id, None, _role_name_from_assumed_arn(credential.principal_arn))
+    tags = list((entity or {}).get("Tags") or [])
+    session = sts_svc._sessions.get(credential.access_key_id)
+    if session is not None:
+        tags += session.get("SessionTags") or []
+        keys["aws:multifactorauthpresent"] = "false"
+        if isinstance(session.get("IssuedAt"), (int, float)):
+            keys["aws:tokenissuetime"] = _dt.datetime.fromtimestamp(
+                session["IssuedAt"], _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    keys.update({f"aws:principaltag/{t['Key'].lower()}": t["Value"] for t in tags})
+    return keys
+
+
 def resolve_principal(access_key_id: str,
                       account_id: str, credential: ResolvedCredential | None = None) -> PrincipalInfo | AuthError:
     """Resolve an access key to a principal and their policies.
@@ -1074,6 +1111,7 @@ def resolve_principal(access_key_id: str,
         type=credential.principal_type,
         account=credential.account_id,
         policies=policies,
+        keys=_principal_keys(credential),
     )
 
 
@@ -1213,6 +1251,12 @@ def resolve_caller_identity(access_key_id: str) -> dict | None:
     return None
 
 
+def _names_condition_key(policies: list[list[ParsedStatement]], prefix: str) -> bool:
+    """Whether a condition in *policies* uses a key starting with *prefix* (lower case)."""
+    return any(key.lower().startswith(prefix) for stmts in policies for stmt in stmts
+               for block in stmt.conditions.values() if isinstance(block, dict) for key in block)
+
+
 def enforce(access_key_id: str, iam_action: str, service: str,
             region: str, resource_arn: str = "*",
             service_context: dict[str, Any] | None = None) -> EvalResult | AuthError | None:
@@ -1242,6 +1286,13 @@ def enforce(access_key_id: str, iam_action: str, service: str,
     if principal.policies is None:
         return None
 
+    context = {key.lower(): value for key, value in (service_context or {}).items()}
+    # A request that names no tags has no aws:TagKeys.
+    context.setdefault("aws:tagkeys", None)
+    if _names_condition_key(principal.policies, "aws:resourcetag/"):
+        from ministack.services.tagging import resource_tags
+        for name, value in (resource_tags(resource_arn) or {}).items():
+            context.setdefault(f"aws:resourcetag/{name}".lower(), value)
     ctx = EvalContext(
         principal_arn=principal.arn,
         principal_type=principal.type,
@@ -1249,9 +1300,8 @@ def enforce(access_key_id: str, iam_action: str, service: str,
         action=iam_action,
         resource_arn=resource_arn,
         region=region,
-        service_context={
-            key.lower(): value for key, value in (service_context or {}).items()
-        },
+        service_context=context,
+        principal_keys=principal.keys,
     )
 
     result = evaluate(ctx, principal.policies)
@@ -1319,6 +1369,8 @@ def evaluate_trust_policy(trust_doc: str | dict,
       - ``{"AWS": "ACCT"}`` — account ID shorthand
       - ``{"Service": "lambda.amazonaws.com"}`` — service principal
       - ``{"AWS": ["arn1", "arn2"]}`` — list of principals
+      - ``{"Federated": "PROVIDER"}`` — web identity provider, for
+        ``sts:AssumeRoleWithWebIdentity`` only
     """
     if isinstance(trust_doc, str):
         try:
@@ -1340,6 +1392,7 @@ def evaluate_trust_policy(trust_doc: str | dict,
             principal_account=_account_from_arn(caller_arn) or "",
             action="sts:AssumeRole", resource_arn="*", region="",
         )
+    federated = ctx.action == "sts:AssumeRoleWithWebIdentity"
     allowed = False
     for stmt in statements:
         if not isinstance(stmt, dict):
@@ -1353,11 +1406,11 @@ def evaluate_trust_policy(trust_doc: str | dict,
             actions = [actions]
         if isinstance(not_actions, str):
             not_actions = [not_actions]
-        if not (actions or not_actions) or not _action_matches("sts:AssumeRole", actions, not_actions):
+        if not (actions or not_actions) or not _action_matches(ctx.action, actions, not_actions):
             continue
         # Check Principal
         principal = stmt.get("Principal", {})
-        if not _principal_matches(principal, caller_arn):
+        if not _trust_principal_matches(principal, caller_arn, federated):
             continue
         if not _conditions_met(stmt.get("Condition", {}), ctx):
             continue
@@ -1366,6 +1419,16 @@ def evaluate_trust_policy(trust_doc: str | dict,
         allowed = True
 
     return allowed
+
+
+def _trust_principal_matches(principal: Any, caller_arn: str, federated: bool) -> bool:
+    """Whether a trust-policy Principal names the caller or, if *federated*, the provider."""
+    if not federated:
+        return _principal_matches(principal, caller_arn)
+    if principal == "*":
+        return True
+    providers = principal.get("Federated", []) if isinstance(principal, dict) else []
+    return caller_arn in ([providers] if isinstance(providers, str) else providers)
 
 
 def _principal_matches(principal: Any, caller_arn: str) -> bool:
@@ -1402,20 +1465,8 @@ def _principal_matches(principal: Any, caller_arn: str) -> bool:
             # Also match account root against any principal in that account
             if p.endswith(":root") and f":{p.split(':')[4]}:" in caller_arn:
                 return True
-        # Service principals — match if the caller ARN looks like it came from
-        # that service (e.g., lambda.amazonaws.com allows Lambda-invoked assumes).
-        # In local dev, service principals are typically used by MiniStack's own
-        # service dispatch (Lambda, ECS, etc.), so we also allow if the caller
-        # is root (service-to-service calls use root credentials internally).
-        svc_principals = principal.get("Service", [])
-        if isinstance(svc_principals, str):
-            svc_principals = [svc_principals]
-        if svc_principals:
-            if ":root" in caller_arn:
-                return True
-            for svc in svc_principals:
-                # Extract service prefix: "lambda.amazonaws.com" → "lambda"
-                svc_prefix = svc.split(".")[0] if "." in svc else svc
-                if svc_prefix in caller_arn:
-                    return True
+        # No IAM principal is a service, but MiniStack's own service calls
+        # use root credentials, so a Service principal lets root through.
+        if principal.get("Service") and caller_arn.endswith(":root"):
+            return True
     return False
