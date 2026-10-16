@@ -1042,6 +1042,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "StartDBInstance": "rds",
             "StopDBInstance": "rds",
             "RebootDBInstance": "rds",
+            "DescribeEvents": "rds",
             "ModifyDBInstance": "rds",
             "CreateDBCluster": "rds",
             "DeleteDBCluster": "rds",
