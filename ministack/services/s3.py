@@ -958,14 +958,10 @@ def _foreign_bucket_allows(owner_account: str, bucket_name: str, key: str,
     groups = [_ACL_GROUP_ALL_USERS] if not caller else [
         _ACL_GROUP_ALL_USERS, _ACL_GROUP_AUTHENTICATED]
 
-    acls = [_bucket_acl.get_scoped(owner_account, None, bucket_name)]
-    record = _buckets.get_scoped(owner_account, None, bucket_name)
-    if key and record is not None:
-        version_id = _resolve_subresource_version(query_params, record, key)
-        acls.append(_object_acl.get_scoped(owner_account, None, (bucket_name, key, version_id)))
-    for stored in acls:
-        for uri, permission in _acl_group_grants(stored):
-            if uri in groups and permission in wants:
+    for stored, granted in ((_bucket_acl.get_scoped(owner_account, None, bucket_name), wants),
+                            (object_acl, object_wants)):
+        for uri, permission in _acl_grants(stored):
+            if uri in groups and permission in granted:
                 return True
 
     policy = _bucket_policies.get_scoped(owner_account, None, bucket_name)
@@ -2106,6 +2102,7 @@ async def handle_request(
     body: bytes,
     query_params: dict,
     signed_path: str | None = None,
+    enforce_bucket_region: bool = True,
     internal: bool = False,
 ) -> tuple:
     bucket, key = _parse_bucket_key(path, headers)
@@ -2128,6 +2125,9 @@ async def handle_request(
     headers = _merge_hoisted_amz_headers(headers, query_params)
 
     denied = _apply_bucket_scope(method, bucket, key, headers, query_params, body, internal)
+    if denied is None and enforce_bucket_region:
+        # After the scope is pinned, so the owner's record names the home region.
+        denied = _check_bucket_region(method, bucket, key, headers, query_params)
     if denied is not None:
         status, resp_headers, resp_body = denied
         resp_headers.setdefault("x-amz-request-id", new_uuid())
@@ -2509,6 +2509,12 @@ def _create_bucket(name: str, body: bytes, headers: dict = None, endpoint_region
     # request was signed for, like real AWS.
     region = region or get_region()
     _buckets[name] = {"created": now_iso(), "objects": {}, "region": region}
+    ownership = headers.get("x-amz-object-ownership")
+    if ownership:
+        # The same document PutBucketOwnershipControls stores.
+        root = Element("OwnershipControls", xmlns=S3_NS)
+        SubElement(SubElement(root, "Rule"), "ObjectOwnership").text = ownership
+        _buckets[name]["_ownership_controls"] = _xml_body(root).decode()
     if tags:
         _bucket_tags[name] = tags
     if canned_acl:
@@ -5046,18 +5052,20 @@ def _replication_destination(bucket_name: str, key: str, rule: dict, role: str):
 
 
 def _maybe_replicate_delete_marker(bucket_name: str, key: str) -> None:
-    """Replicate a delete marker the way AWS does: only for a V2 rule (one with
-    ``Filter``) that has ``DeleteMarkerReplication`` Enabled and no tag filter.
-    Called only for deletes without a version id; version-id deletes never
-    replicate. Replica markers are not re-replicated, so two-way setups don't
-    loop."""
+    """Replicate a delete marker the way AWS does: always for a V1 rule (no
+    ``Filter``), and for a V2 rule only with ``DeleteMarkerReplication`` Enabled
+    and no tag filter. Called only for deletes without a version id; version-id
+    deletes never replicate. Replica markers are not re-replicated, so two-way
+    setups don't loop."""
     config = _bucket_replication.get(bucket_name)
     if not config or _bucket_versioning.get(bucket_name) != "Enabled":
         return
     rule = next((r for r in config.get("Rules", [])
                  if r.get("Status") == "Enabled" and key.startswith(_replication_rule_prefix(r))), None)
-    if (rule is None or "Filter" not in rule or _replication_rule_tags(rule)
-            or (rule.get("DeleteMarkerReplication") or {}).get("Status") != "Enabled"):
+    if rule is None:
+        return
+    if "Filter" in rule and (_replication_rule_tags(rule)
+                             or (rule.get("DeleteMarkerReplication") or {}).get("Status") != "Enabled"):
         return
     target = _replication_destination(bucket_name, key, rule, config.get("Role", ""))
     if target is None:

@@ -5630,15 +5630,12 @@ def _begin_instance_reboot(p):
             return invalid_arn
         return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
     if instance.get("DBInstanceStatus") != "available":
-        return _error("InvalidDBInstanceState", "DB instance must be available to reboot.", 400)
-    # A local fault-injection setting, not an AWS request parameter. Keep the
-    # engine stopped during this interval so clients experience real downtime.
-    try:
-        downtime = float(os.environ.get("RDS_REBOOT_DOWNTIME_SECONDS", "0"))
-        if not 0 <= downtime <= 3600:
-            raise ValueError
-    except ValueError:
-        return _error("InvalidParameterValue", "RDS_REBOOT_DOWNTIME_SECONDS must be between 0 and 3600.", 400)
+        return _error(
+            "InvalidDBInstanceState",
+            f"DBInstance {db_id} is in {instance.get('DBInstanceStatus')} state but expected "
+            "it to be one of available.",
+            400,
+        )
     cluster_id = instance.get("_shared_cluster_id") or instance.get("DBClusterIdentifier")
     cluster = _resolve_cluster_in_request_region(cluster_id) if cluster_id else None
     if cluster and (switch_error := _begin_mysql_global_instance_mutation(cluster)):
@@ -5649,7 +5646,7 @@ def _begin_instance_reboot(p):
     response = _single_instance_response("RebootDBInstanceResponse", "RebootDBInstanceResult", instance)
     context = contextvars.copy_context()
     threading.Thread(
-        target=context.run, args=(_finish_instance_reboot, instance, cluster, downtime),
+        target=context.run, args=(_finish_instance_reboot, instance, cluster),
         daemon=True,
     ).start()
     return response
@@ -5664,7 +5661,7 @@ def _record_reboot_event(instance):
         _events[new_uuid()] = {
             "SourceIdentifier": instance["DBInstanceIdentifier"],
             "SourceType": "db-instance", "SourceArn": instance.get("DBInstanceArn", ""),
-            "Message": "DB instance restarted", "Date": now,
+            "Message": "DB instance restarted.", "Date": now,
             "EventCategories": ["availability"],
         }
 
@@ -5675,7 +5672,9 @@ def _describe_events(p):
     kind = _p(p, "SourceType")
     if source and not kind:
         return _error("InvalidParameterCombination", "SourceIdentifier requires SourceType.", 400)
-    if kind and kind not in ("db-instance", "db-cluster", "db-parameter-group", "db-security-group", "db-snapshot", "db-cluster-snapshot", "db-proxy", "blue-green-deployment", "zero-etl"):
+    if kind and kind not in ("db-instance", "db-parameter-group", "db-security-group", "db-snapshot", "db-cluster",
+                             "db-cluster-snapshot", "custom-engine-version", "db-proxy", "blue-green-deployment",
+                             "db-shard-group", "zero-etl"):
         return _error("InvalidParameterValue", "Invalid SourceType.", 400)
     def timestamp(value, default):
         if not value:
@@ -5719,7 +5718,7 @@ def _describe_events(p):
     return _xml(200, "DescribeEventsResponse", f"<DescribeEventsResult><Events>{members}</Events>{next_marker}</DescribeEventsResult>")
 
 
-def _finish_instance_reboot(instance, cluster, downtime):
+def _finish_instance_reboot(instance, cluster):
     db_id = instance["DBInstanceIdentifier"]
 
     def current():
@@ -5731,8 +5730,6 @@ def _finish_instance_reboot(instance, cluster, downtime):
         if client and container_id:
             container = client.containers.get(container_id)
             container.stop(timeout=5)
-            if downtime:
-                time.sleep(downtime)
             if not current():
                 return
             container.start()
@@ -5753,8 +5750,6 @@ def _finish_instance_reboot(instance, cluster, downtime):
                 instance.get("DBName"), alive,
             ):
                 raise RuntimeError("database stopped before reboot readiness")
-        elif downtime:
-            time.sleep(downtime)
         if current():
             _record_reboot_event(instance)
             instance["DBInstanceStatus"] = "available"
@@ -11402,11 +11397,7 @@ def _xml(status, root_tag, inner):
 
 
 def _error(code, message, status):
-    # Real AWS Query-protocol error envelopes include
-    # <Type>Sender|Receiver</Type> — Sender for 4xx (caller's fault),
-    # Receiver for 5xx — and carry no <?xml?> declaration (17-region
-    # real-AWS capture sweep). Most SDKs ignore the field but it's part
-    # of the observed AWS shape.
+    # Query error envelope: <Type> in <Error>, no <?xml?> (AWS captures).
     fault_type = "Sender" if 400 <= status < 500 else "Receiver"
     body = f"""<ErrorResponse xmlns="http://rds.amazonaws.com/doc/2014-10-31/">
     <Error><Type>{fault_type}</Type><Code>{code}</Code><Message>{message}</Message></Error>

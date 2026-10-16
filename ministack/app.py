@@ -1590,7 +1590,7 @@ async def _handle_s3_control_request(path: str, method: str, body: bytes, query_
                 if denied:
                     return denied
         status, resp_headers, resp_body = (
-            s3.s3control_account_error(headers)
+            (AUTH and s3.s3control_account_error(headers))
             or s3.handle_mrap_control(method, path, headers, body, query_params)
         )
         return status, {**resp_headers, "x-amzn-requestid": request_id}, resp_body
@@ -2597,8 +2597,7 @@ def _unknown_query_error(body: bytes, request_id: str):
         else "The requested action is not valid for this web service."
     )
     msg = msg.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    # Query-protocol error envelopes carry no <?xml?> declaration on the
-    # real AWS wire (17-region capture sweep, 0/85 declarations).
+    # Query error envelopes carry no <?xml?> declaration (AWS captures).
     xml = (
         '<ErrorResponse xmlns="http://webservices.amazon.com/doc/2010-05-08/">'
         f"<Error><Type>Sender</Type><Code>InvalidAction</Code><Message>{msg}</Message></Error>"

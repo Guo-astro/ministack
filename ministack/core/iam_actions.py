@@ -2115,13 +2115,21 @@ def access_denied_response(service: str, action: str, principal_arn: str,
         return status, {"Content-Type": "application/xml"}, body.encode()
 
     if protocol == "query-xml":
-        # Query-protocol error envelopes carry no <?xml?> declaration on
-        # the real AWS wire (17-region capture sweep, 0/85 declarations).
+        # Query error envelopes carry no <?xml?> declaration (AWS captures).
         ns = _QUERY_XML_NS.get(service, "https://iam.amazonaws.com/doc/2010-05-08/")
         body = (
             f'<ErrorResponse xmlns="{ns}">'
             f"<Error><Type>Sender</Type><Code>{_esc_code}</Code>"
             f"<Message>{_esc_msg}</Message></Error>"
+            f"<RequestId>{_esc_rid}</RequestId></ErrorResponse>"
+        )
+        return status, {"Content-Type": "text/xml"}, body.encode()
+
+    if service == "sqs" and headers is not None and not headers.get("x-amz-target"):
+        # A query-mode SQS request is answered in SQS's query XML (live AWS capture).
+        body = (
+            '<?xml version="1.0"?><ErrorResponse xmlns="http://queue.amazonaws.com/doc/2012-11-05/">'
+            f"<Error><Type>Sender</Type><Code>{_esc_code}</Code><Message>{_esc_msg}</Message><Detail/></Error>"
             f"<RequestId>{_esc_rid}</RequestId></ErrorResponse>"
         )
         return status, {"Content-Type": "text/xml"}, body.encode()
