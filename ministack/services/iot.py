@@ -9629,14 +9629,11 @@ async def broker_publish(
     properties: bytes = b"",
     client_id: str | None = None,
     principal: str | None = None,
-) -> int:
+) -> None:
     """Deliver a message to every matching subscriber.
 
     ``properties`` is an encoded MQTT 5 property block forwarded verbatim to
-    v5 subscribers (empty for a 3.1.1 publisher or an HTTP publish). Returns
-    how many recipients the message reached — subscribers delivered to plus
-    offline persistent sessions it was queued for — which is what an MQTT 5
-    PUBACK reports as Success versus No matching subscribers.
+    v5 subscribers (empty for a 3.1.1 publisher or an HTTP publish).
 
     ``client_id`` names the publishing MQTT client, which is what a No Local
     subscription is defined against (§3.8.3.1): that subscriber does not want
@@ -9647,7 +9644,6 @@ async def broker_publish(
     ``principal`` is who published the message, what the rule SQL
     ``principal()`` returns; rules also see a fresh trace id per message.
     """
-    delivered = 0
     # Basic Ingest: a publish to `$aws/rules/<ruleName>` is delivered straight
     # to that rule's actions and bypasses pub/sub delivery entirely.
     if topic.startswith(_BASIC_INGEST_PREFIX):
@@ -9664,7 +9660,7 @@ async def broker_publish(
                 remainder[1] if len(remainder) > 1 else "",
                 client_id,
             )
-        return delivered
+        return
 
     scoped = _scoped_topic(account_id, region, topic)
 
@@ -9700,7 +9696,6 @@ async def broker_publish(
                         payload,
                         effective_qos,
                     )
-                    delivered += 1
                 except Exception:
                     _broker_logger.exception("IoT broker: subscriber %s delivery failed", sub.subscription_id)
                 finally:
@@ -9722,7 +9717,6 @@ async def broker_publish(
                     ps.queued_messages.append((topic, payload, qos))
                     if len(ps.queued_messages) > _MAX_QUEUED_MESSAGES:
                         ps.queued_messages = ps.queued_messages[-_MAX_QUEUED_MESSAGES:]
-                    delivered += 1
                     break
 
     with _rule_message_scope(principal):
@@ -9759,8 +9753,6 @@ async def broker_publish(
             _broker_logger.warning(
                 "IoT jobs bridge failed for %r", topic, exc_info=True
             )
-
-    return delivered
 
 
 async def broker_subscribe(
@@ -9991,7 +9983,6 @@ CONNACK_311_NOT_AUTHORIZED = 0x05
 # MQTT 5 reason codes, only the ones this broker produces (§2.4). Success and
 # Normal disconnection share the value 0x00.
 RC5_SUCCESS = 0x00
-RC5_NO_MATCHING_SUBSCRIBERS = 0x10
 RC5_NO_SUBSCRIPTION_EXISTED = 0x11
 RC5_MALFORMED_PACKET = 0x81
 RC5_NOT_AUTHORIZED = 0x87
@@ -10935,7 +10926,7 @@ class _WSSession:
                     return True
                 return await self._close_unauthorized()
             payload = body[off:]
-            delivered = await broker_publish(
+            await broker_publish(
                 self.account_id,
                 self.region,
                 topic,
@@ -10947,9 +10938,9 @@ class _WSSession:
                 principal=self._principal,
             )
             if qos == 1 and packet_id is not None:
+                # Success also when nobody subscribes, as AWS IoT answers.
                 if self.protocol_version == MQTT_5:
-                    reason = RC5_SUCCESS if delivered else RC5_NO_MATCHING_SUBSCRIBERS
-                    await self.send_bytes(_make_puback(packet_id, reason_code=reason))
+                    await self.send_bytes(_make_puback(packet_id, reason_code=RC5_SUCCESS))
                 else:
                     await self.send_bytes(_make_puback(packet_id))
             fleet = _parse_fleet_provisioning_topic(topic)
