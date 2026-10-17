@@ -9,6 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Lambda — conditional function and alias updates** — `UpdateFunctionCode`, `UpdateFunctionConfiguration`, and `UpdateAlias` reject a stale `RevisionId` with `PreconditionFailedException` (412) before changing state or invalidating workers. Competing updates to the same revision are serialized per function or alias, while unrelated resources remain independent.
 - **SQS — empty policy updates** — `SetQueueAttributes` removes `Policy`, `RedrivePolicy`, and `RedriveAllowPolicy` when explicitly set to an empty string, so Terraform policy deletion succeeds and subsequent attribute reads omit the removed policy. Invalid nonempty redrive policies and numeric attributes are still rejected before any attributes change.
 - **AppSync Events event payloads**: deliver each WebSocket data frame with a string `event` field, matching observed AWS behavior. HTTP and WebSocket publish batches still produce one frame per event.
 - **CloudFront — function status follows publish and association** — `DescribeFunction` and `ListFunctions` reported the `DEVELOPMENT` stage as `UNPUBLISHED` even after `PublishFunction`, so Terraform's `aws_cloudfront_function.status`, which reads that stage, never left `UNPUBLISHED`; once the current development version is published it now reports `UNASSOCIATED`, or `ASSOCIATED` while a distribution's cache behavior references the function, and an `UpdateFunction` makes it `UNPUBLISHED` again until the next publish. Contributed by @fabio-andre-rodrigues.
