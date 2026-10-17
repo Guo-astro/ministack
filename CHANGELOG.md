@@ -8,6 +8,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+
+- **SQS — empty policy updates** — `SetQueueAttributes` removes `Policy`, `RedrivePolicy`, and `RedriveAllowPolicy` when explicitly set to an empty string, so Terraform policy deletion succeeds and subsequent attribute reads omit the removed policy. Invalid nonempty redrive policies and numeric attributes are still rejected before any attributes change.
 - **AppSync Events event payloads**: deliver each WebSocket data frame with a string `event` field, matching observed AWS behavior. HTTP and WebSocket publish batches still produce one frame per event.
 - **CloudFront — function status follows publish and association** — `DescribeFunction` and `ListFunctions` reported the `DEVELOPMENT` stage as `UNPUBLISHED` even after `PublishFunction`, so Terraform's `aws_cloudfront_function.status`, which reads that stage, never left `UNPUBLISHED`; once the current development version is published it now reports `UNASSOCIATED`, or `ASSOCIATED` while a distribution's cache behavior references the function, and an `UpdateFunction` makes it `UNPUBLISHED` again until the next publish. Contributed by @fabio-andre-rodrigues.
 - **Step Functions — JSONata Fail and Wait fields are evaluated** — a JSONata Fail state raised its `Error` and `Cause` expressions as literal text, a JSONata Wait failed on a `Seconds` expression, ignored a `Timestamp` expression and dropped its `Output` and `Assign`, and JSONPath `ErrorPath`/`CausePath` were ignored; they are now evaluated, with AWS's `States.QueryEvaluationError` or `States.Runtime` for a result of the wrong type, a `Seconds` that is not a non-negative integer and an unparsable `Timestamp`.
