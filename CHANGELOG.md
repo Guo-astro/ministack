@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **S3 — signed browser POST policies** — SigV4 and legacy SigV2 form uploads now verify their policy signature and registered credentials, expiration, exact and prefix conditions, field coverage and file-size bounds before writing. Under `AUTH=true` the form signer also needs the object write permissions. Registered IAM keys retain the bucket owner's account scope. Anonymous form behavior is unchanged.
 - **CloudWatch Logs — ordered, bounded event reads** — keep stream histories chronological for API, Lambda, CodeBuild and DynamoDB import logs, including late batches and restored snapshots. `FilterLogEvents` seeks to time bounds and merges stream cursors until its limit is reached instead of collecting, filtering and sorting every event; newer events in an earlier-scanned stream cannot displace older matches. Equal timestamps retain stream-selection and arrival order, `GetLogEvents` reads late arrivals chronologically with tokens anchored to returned events, so pages neither repeat nor skip events on the unread side, and Live Tail still receives the exact newly ingested batch.
 
 - **Lambda — conditional function and alias updates** — `UpdateFunctionCode`, `UpdateFunctionConfiguration`, and `UpdateAlias` reject a stale `RevisionId` with `PreconditionFailedException` (412) before changing state or invalidating workers. Competing updates to the same revision are serialized per function or alias, while unrelated resources remain independent.
