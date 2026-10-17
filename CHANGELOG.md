@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **CloudWatch Logs — ordered, bounded event reads** — keep stream histories chronological for API, Lambda, CodeBuild and DynamoDB import logs, including late batches and restored snapshots. `FilterLogEvents` seeks to time bounds and merges stream cursors until its limit is reached instead of collecting, filtering and sorting every event; newer events in an earlier-scanned stream cannot displace older matches. Equal timestamps retain stream-selection and arrival order, `GetLogEvents` reads late arrivals chronologically with tokens anchored to returned events, so pages neither repeat nor skip events on the unread side, and Live Tail still receives the exact newly ingested batch.
 
 - **Lambda — conditional function and alias updates** — `UpdateFunctionCode`, `UpdateFunctionConfiguration`, and `UpdateAlias` reject a stale `RevisionId` with `PreconditionFailedException` (412) before changing state or invalidating workers. Competing updates to the same revision are serialized per function or alias, while unrelated resources remain independent.
 - **SQS — empty policy updates** — `SetQueueAttributes` removes `Policy`, `RedrivePolicy`, and `RedriveAllowPolicy` when explicitly set to an empty string, so Terraform policy deletion succeeds and subsequent attribute reads omit the removed policy. Invalid nonempty redrive policies and numeric attributes are still rejected before any attributes change.
