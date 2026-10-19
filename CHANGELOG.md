@@ -7,6 +7,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Cognito — user pool feature plans** — `CreateUserPool`, `UpdateUserPool` and `AWS::Cognito::UserPool` ignored `UserPoolTier`; a pool now stores and describes its tier (`ESSENTIALS` by default, `PLUS` when created with threat protection on), keeps it when an update omits it, and refuses threat protection on `ESSENTIALS` and password history on `LITE` with `FeatureUnavailableInTierException` or, on a tier change, `TierChangeNotAllowedException`. Contributed by @iot-rocket.
 ### Fixed
 - **IoT — topic rule name errors** — `CreateTopicRule` refused a name outside `^[a-zA-Z0-9_]+$` or longer than 128 characters with its own `Invalid ruleName: must match [a-zA-Z0-9_]{1,128}`; it now answers AWS's 400 `InvalidRequestException` validation message, which names the failed pattern, the failed length or both, and the topic rule calls that already checked the name give the length part too. A valid name followed by a newline passed the name check, so `CreateTopicRule` stored a rule under it; all six calls refuse it now. Contributed by @iot-rocket.
 - **IoT — unknown topic rules answer 401** — `GetTopicRule`, `ReplaceTopicRule`, `EnableTopicRule` and `DisableTopicRule` on a rule that does not exist answered 404 `ResourceNotFoundException` and `DeleteTopicRule` answered 200; they now answer 401 `UnauthorizedException` (`Access to topic rule '<name>' was denied`) as AWS does, and `GetTopicRule`, `ReplaceTopicRule` and `DeleteTopicRule` refuse a name outside the rule name pattern with the 400 `InvalidRequestException` that `EnableTopicRule` gives. Contributed by @iot-rocket.
