@@ -7,6 +7,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Auth — bucket policies see S3's request condition keys under `AUTH=true`** — `s3:x-amz-server-side-encryption`, `s3:x-amz-acl` and `s3:ExistingObjectTag/<key>` were absent from every request but a signed browser POST, so the common "require encryption" Deny refused even an `AES256` upload; a write now carries its encryption and canned ACL headers (an upload part and the completion the encryption header of their `CreateMultipartUpload`), and `GetObject` / `HeadObject` the object's tags, for bucket and identity policies alike. Contributed by @iot-rocket.
 ### Fixed
 - **API Gateway — presigned calls to `AWS_IAM` REST methods under `AUTH=true`** — a request signed in its query string (`X-Amz-Signature`) with an IAM user or STS session key answered 403 `MissingAuthenticationTokenException` on an `AWS_IAM` method even when correctly signed; under `AUTH=true`, which verifies that signature, it now reaches the method as on AWS. Contributed by @iot-rocket.
 ### Added
