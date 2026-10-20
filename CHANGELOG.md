@@ -12,6 +12,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **Route 53 — private hosted zones keep their VPC** — `CreateHostedZone` with a `VPC` made a public zone and dropped the VPC, so Terraform's `aws_route53_zone` with a `vpc` block planned to add it again on every run; the zone is now private, the response carries the `VPC` instead of a delegation set, also on a `CallerReference` replay, and `GetHostedZone` returns its `VPCs`. Contributed by @kharabasz.
+- **ELBv2 — listener `SslPolicy` and certificate** — `CreateListener` and `ModifyListener` dropped `SslPolicy` and `Certificates`, so `DescribeListeners` returned neither and Terraform re-planned `ssl_policy` on every HTTPS listener; HTTPS and TLS listeners now keep and return both, the policy defaults to `ELBSecurityPolicy-2016-08`, a listener moved to HTTP or TCP drops them, and more than one default certificate answers `ValidationError`. Contributed by @kharabasz.
+
 ## [1.5.30] — 2026-10-20
 
 ### Added
