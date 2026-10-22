@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Auth — SigV4a signatures are verified under `AUTH=true`** — requests signed with `AWS4-ECDSA-P256-SHA256`, which SDKs use for Multi-Region Access Points, were refused for every IAM user. Header and presigned S3 signatures are now checked with the P-256 key SigV4a derives from the secret, with their date or expiry, and an `X-Amz-Region-Set` that leaves out the serving region is refused (`RegionSetMismatch` on S3, the unknown-key error elsewhere). Contributed by @iot-rocket.
+
 ### Fixed
 - **S3 — Multi-Region Access Point requests are authorized** — under `AUTH=true`, requests through an MRAP hostname were served without an IAM check. They are now authorized on the member bucket and then on the MRAP, whose policy is evaluated like a bucket policy, and answer `AccessDenied` naming the resource that refused them. Contributed by @iot-rocket.
 - **Cognito — signing keys, managed login and federated users** — every user pool signed with one shared key (`kid` `ministack-key-1`); each pool now has two keys of its own, one for access tokens and one for ID tokens, both published at its JWKS URI, and a token verifies only against its own pool. Managed login refuses PKCE `plain` and a `code_challenge` without `S256` (`error=invalid_request`), any `redirect_uri` the client didn't register, also for a client with no callback URLs, and a `grant_type` other than `authorization_code`, `refresh_token` or `client_credentials` (400 `unsupported_grant_type`). Adding an identity provider creates the group `<user pool id>_<provider name>`, and a federated user's new profile joins it and carries its `identities`, so the ID token has both claims. Reported by @cupidchan.
