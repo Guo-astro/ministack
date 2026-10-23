@@ -55,7 +55,7 @@ _CLOUDFRONT_HOST_RE = re.compile(
 # FunctionUrl carries AWS's own `.on.aws` suffix, so we match any suffix rather
 # than only _MINISTACK_HOST — pointing a proxy or an /etc/hosts entry at the
 # AWS-shaped hostname is the whole point of addressing a function this way.
-_LAMBDA_URL_RE = re.compile(r"^([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\.lambda-url\.[a-z0-9-]+\.")
+_LAMBDA_URL_RE = re.compile(r"^([a-z0-9]{32}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\.lambda-url\.[a-z0-9-]+\.")
 # OpenSearch Serverless collection endpoint: {collectionId}.{region}.aoss.<anything>[:port].
 _AOSS_COLLECTION_HOST_RE = re.compile(r"^[a-z0-9]{3,40}\.[a-z0-9-]+\.aoss\.", re.IGNORECASE)
 # AppSync Events realtime WebSocket: {apiId}.appsync-realtime-api.<anything>[:port].
@@ -1981,7 +1981,7 @@ async def _handle_cloudfront_dataplane_request(
     if dist is None:
         return None
     try:
-        return await _get_module("cloudfront_dataplane").handle_request(
+        return await _get_module("cloudfront").handle_viewer_request(
             dist, method, path, raw_path, raw_query_string, headers, body, query_params, client_ip,
         )
     except Exception as e:
@@ -2136,7 +2136,8 @@ def _function_url_auth_target(url_id: str) -> tuple[str, dict, tuple | None]:
     return function_arn, {"lambda:FunctionUrlAuthType": cfg.get("AuthType", "AWS_IAM")}, resolved
 
 
-async def _handle_lambda_url_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
+async def _handle_lambda_url_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict,
+                                     source_ip: str | None = None):
     """Handle Lambda Function URL data plane requests (Host-based + path-based)."""
     parsed = _parse_lambda_url(host, path)
     if parsed is None:
@@ -2154,7 +2155,7 @@ async def _handle_lambda_url_request(host: str, path: str, method: str, headers:
     try:
         # The handler reuses the lookup above; None makes it resolve again.
         return await _get_module("lambda_svc").handle_function_url_request(
-            url_id, method, function_path, headers, body, query_params, resolved=resolved,
+            url_id, method, function_path, headers, body, query_params, resolved=resolved, source_ip=source_ip,
         )
     except Exception as e:
         logger.exception("Error in Lambda Function URL dispatch: %s", e)
@@ -2453,7 +2454,7 @@ def _authenticate_only(service: str, headers: dict, query_params: dict, request_
         return None
     from ministack.core.iam_evaluator import check_credentials
 
-    failure = check_credentials(extract_access_key_id(headers, query_params))
+    failure = check_credentials(extract_access_key_id(headers, query_params), service)
     return _credential_failure(service, "", request_id, failure, headers) if failure else None
 
 
@@ -2946,6 +2947,7 @@ async def _dispatch_service_request(
             request_tag_context,
             s3_access_point_resources,
             s3_service_context,
+            verified_access_resource_arns,
         )
         from ministack.core.iam_evaluator import AuthError, enforce, pin_request_caller
         from ministack.core.responses import get_account_id
@@ -3075,6 +3077,16 @@ async def _dispatch_service_request(
                     )
                     if denied:
                         resource_arn = extra_arn  # named in the AccessDenied message
+                        break
+            # A Verified Access call is also checked on every other resource it names.
+            if service == "ec2" and not denied:
+                for extra_arn in verified_access_resource_arns(routing_params, region, get_account_id())[1:]:
+                    denied = enforce(
+                        access_key, iam_action, service, region,
+                        resource_arn=extra_arn, service_context=service_context,
+                    )
+                    if denied:
+                        resource_arn = extra_arn
                         break
             if (
                 denied
