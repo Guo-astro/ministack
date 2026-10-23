@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **API Gateway — an HTTP API's responses carry `apigw-requestid`, not a REST API's request ids** — a response from an HTTP API's route got `x-amzn-requestid` and `x-amz-request-id`; an HTTP API names its request id `apigw-requestid`, 16 base64 characters, which it now sends instead. REST APIs keep `x-amzn-requestid`. Contributed by @jeffreyheller.
 - **Lambda — publishing on create or code update leaves `$LATEST` unpublished** — `CreateFunction` and `UpdateFunctionCode` with `Publish: true` overwrote `$LATEST`'s `Version` with the new version number. `ListVersionsByFunction` then listed that number twice and no `$LATEST`, `GetFunctionConfiguration` without a qualifier reported it, and invoking `$LATEST` set `AWS_LAMBDA_FUNCTION_VERSION` to it. `$LATEST` now stays `$LATEST`, as on AWS; the create and update responses are unchanged.
 ### Added
 
