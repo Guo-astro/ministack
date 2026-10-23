@@ -8,6 +8,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+
+- **SSM — service settings** — `GetServiceSetting`, `UpdateServiceSetting` and `ResetServiceSetting`, per account and region, persisted. `SettingValue` is validated for the ids whose accepted values AWS documents, and `/ssm/parameter-store/default-parameter-tier` sets the `Tier` of a `PutParameter` that names none. Unblocks Terraform's `aws_ssm_service_setting`.
 - **Auth — SigV4a signatures are verified under `AUTH=true`** — requests signed with `AWS4-ECDSA-P256-SHA256`, which SDKs use for Multi-Region Access Points, were refused for every IAM user. Header and presigned S3 signatures are now checked with the P-256 key SigV4a derives from the secret, with their date or expiry, and an `X-Amz-Region-Set` that leaves out the serving region is refused (`RegionSetMismatch` on S3, the unknown-key error elsewhere). Contributed by @iot-rocket.
 
 ### Fixed
