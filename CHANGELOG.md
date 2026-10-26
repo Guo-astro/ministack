@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Step Functions — JSONata fields on an inline `Map`** — `Items`, `ItemSelector`, `MaxConcurrency`, `Output` and `Assign` were ignored or read as JSONPath, so the Map iterated over the whole input, iterations got literal `{% ... %}` text, a `MaxConcurrency` expression failed with `States.Runtime`, and `Assign` variables were never set; all five are now evaluated, as on AWS. `Items` that is not an array fails with `States.QueryEvaluationError`.
 - **Step Functions — JSONata `Catch` on `Map` and `Parallel` states** — a catcher's `Output` and `Assign` were ignored, so the caught error passed on unchanged and the catcher's variables were never set; both now apply, as on a `Task` state.
 - **Step Functions — JSONata variables with the value `null`** — a variable assigned `null` read back as undefined, so `{% $var %}` failed with `States.QueryEvaluationError`; it now reads back as `null`, as on AWS. An unset variable still fails.
 - **Lambda — Kinesis event source mapping filters** — a `FilterCriteria` pattern on a Kinesis record's `data` or on its metadata (`partitionKey`, `sequenceNumber`, ...) never matched, so a mapping with filters dropped every record. Patterns are now matched as AWS documents them: metadata fields next to the event fields, and `data` decoded from base64 as JSON. Data that isn't JSON can't match a `data` pattern but still matches metadata patterns.
