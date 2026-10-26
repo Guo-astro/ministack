@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **OpenSearch — `OPENSEARCH_JAVA_OPTS`** — a small machine could not cap the heap of the engine containers MiniStack starts; the setting is now passed to each of them (per-domain and Serverless collection), and unset passes nothing. Contributed by @skialpine.
+
+### Fixed
+- **OpenSearch — the container reaper no longer removes a live domain's exited engine** — the reaper read a container id key that only the deferred create path set, so it took a domain's stopped engine for abandoned and removed it after two minutes; it now reads the key every domain record keeps. Contributed by @skialpine.
 ### Fixed
 - **Lambda — restoring persisted state shares code between versions** — each function version got its own copy of its zip at boot, although versions share one blob file, so a state with many versions took gigabytes before the first request. Records that share a blob now share its bytes. Contributed by @skialpine.
 - **Lambda — a package that is not a zip is refused** — `CreateFunction`, `UpdateFunctionCode` and `PublishLayerVersion` accepted a package that is not a zip (an empty file included) and answered success, `UpdateFunctionCode` keeping the previous code. They now answer `InvalidParameterValueException` `Could not unzip uploaded file. Please check your file, then try to upload again.` Contributed by @skialpine.
