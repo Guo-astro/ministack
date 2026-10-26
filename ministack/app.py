@@ -2695,7 +2695,11 @@ async def _handle_special_data_plane_request(
     ):
         return _with_data_plane_headers(response, request_id, wildcard_cors=False)
     if response := await _handle_lambda_url_request(host, path, method, headers, body, query_params):
-        return _with_data_plane_headers(response, request_id, wildcard_cors=False)
+        # A Function URL names its own x-amzn-RequestId and X-Amzn-Trace-Id; it sends no other request ids.
+        status, resp_headers, resp_body = response
+        if not any(k.lower() == "x-amzn-requestid" for k in resp_headers):
+            resp_headers["x-amzn-RequestId"] = request_id
+        return status, resp_headers, resp_body
     if response := await _handle_s3_vhost_request(host, path, method, headers, body, query_params):
         if AUTH and (target := _s3_cors_target(host, path, path_style=False)):
             response[1].update(_get_module("s3").cors_response_headers(target[0], method, headers))
@@ -3404,7 +3408,7 @@ async def app(scope, receive, send):
     # IAM denials. Presigns, access points and subresources keep their handlers.
     head_path = None
     # Iceberg routes are selected before S3, even when signed with scope s3.
-    if (AUTH and method == "HEAD" and not path.startswith("/iceberg")
+    if (method == "HEAD" and not path.startswith("/iceberg")
             and detect_service(method, path, headers, query_params) == "s3"):
         host = headers.get("host", "")
         bucket = _extract_s3_vhost_bucket(host)
