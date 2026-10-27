@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Athena — an enforced workgroup overrides the client-side result location** — when a workgroup has `EnforceWorkGroupConfiguration: true`, `StartQueryExecution` now writes results to the workgroup's `OutputLocation`, even when the request gives its own `ResultConfiguration.OutputLocation`, as AWS does. Before, the request's location was used.
 - **Lambda — a partial ARN as the `FunctionName`** — `123456789012:function:my-function[:qualifier]` resolved to the account ID as the function name, so `Invoke` and the other function operations failed with `Function not found: ...:function:123456789012`; it now resolves as the full ARN in the caller's region, as on AWS, and gives the same result as that full ARN.
 ## [1.5.33] — 2026-10-26
 
