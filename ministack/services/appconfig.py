@@ -371,26 +371,63 @@ def _secret_account(secret_id):
         return get_account_id()
 
 
+def _retrieval_session(role_arn):
+    role = parse_arn(role_arn)
+    return (f"arn:{role.partition}:sts::{role.account_id}:assumed-role/"
+            f"{role.resource.rsplit('/', 1)[-1]}/AwsAppConfig-ConfigurationRetriever")
+
+
+def _retrieval_denied(secret_id, role_arn):
+    return _secrets_manager_error(
+        f"User: {_retrieval_session(role_arn)} is not authorized to perform: secretsmanager:GetSecretValue "
+        f"on resource: {secret_id} because no resource-based policy allows the secretsmanager:GetSecretValue action",
+        "AccessDeniedException")
+
+
+def _secret_policy_denies(secret, role_arn):
+    """Under AUTH=true another account's secret is read only if its resource policy lets the
+    retrieval role call GetSecretValue. Called in the secret's own account scope."""
+    from ministack.app import AUTH
+
+    if not AUTH:
+        return False
+    from ministack.core.iam_evaluator import EvalContext, evaluate_resource_policy
+
+    policy = secretsmanager._resource_policies.get(secret["ARN"])
+    ctx = EvalContext(principal_arn=_retrieval_session(role_arn), principal_type="AssumedRole",
+                      principal_account=parse_arn(role_arn).account_id, action="secretsmanager:GetSecretValue",
+                      resource_arn=secret["ARN"], region=get_region())
+    return not policy or evaluate_resource_policy(policy, ctx).decision != "Allow"
+
+
 def _cross_account_secret_error(secret_id, location_uri, role_arn):
     """AWS reads another account's secret as the retrieval role. A secret
     that isn't named by its exact ARN can't be shared, so it is refused; one
     that can't be read (scheduled for deletion, without a value, under that
-    account's AWS managed key) is not found. Whether a resource
-    policy allows the role is IAM's to decide; MiniStack allows it."""
+    account's AWS managed key) is not found."""
     secret = secretsmanager.find_secret(secret_id)
-    if not secret or secret["ARN"] != secret_id:
-        role = parse_arn(role_arn)
-        return _secrets_manager_error(
-            f"User: arn:{role.partition}:sts::{role.account_id}:assumed-role/"
-            f"{role.resource.rsplit('/', 1)[-1]}/AwsAppConfig-ConfigurationRetriever is not authorized "
-            f"to perform: secretsmanager:GetSecretValue on resource: {secret_id} because no "
-            f"resource-based policy allows the secretsmanager:GetSecretValue action",
-            "AccessDeniedException")
+    if not secret or secret["ARN"] != secret_id or _secret_policy_denies(secret, role_arn):
+        return _retrieval_denied(secret_id, role_arn)
     # Scheduled for deletion, without a value, or under that account's AWS
     # managed key, it is not found.
     if not secretsmanager.secret_exists(secret_id) or not _is_customer_managed_key(secret.get("KmsKeyId")):
         return _error(404, "ResourceNotFoundException", f"Secret {location_uri} not found")
     return None
+
+
+def _kms_key_fields(identifier):
+    """KmsKeyIdentifier as given and, when MiniStack's KMS holds the key, its KmsKeyArn."""
+    fields = {"KmsKeyIdentifier": identifier}
+    try:
+        spec = parse_arn(identifier)
+        scope = request_scope(spec.account_id, spec.region)
+    except ArnParseError:
+        scope = request_scope(get_account_id(), get_region())
+    with scope:
+        key = kms._resolve_key(identifier)
+    if key and key.get("Arn"):
+        fields["KmsKeyArn"] = key["Arn"]
+    return fields
 
 
 def _is_customer_managed_key(key_id):
@@ -511,6 +548,8 @@ def _create_configuration_profile(app_id, body):
         "Validators": body.get("Validators", []),
         "Type": body.get("Type", "AWS.Freeform"),
     }
+    if body.get("KmsKeyIdentifier"):
+        record.update(_kms_key_fields(body["KmsKeyIdentifier"]))
     _config_profiles[f"{app_id}/{profile_id}"] = record
     _apply_tags(_profile_arn(app_id, profile_id), body.get("Tags", {}))
     logger.info("CreateConfigurationProfile: %s/%s (%s)", app_id, name, profile_id)
@@ -539,6 +578,11 @@ def _update_configuration_profile(app_id, profile_id, body):
     for field in ("Name", "Description", "RetrievalRoleArn", "Validators"):
         if field in body:
             profile[field] = body[field]
+    if "KmsKeyIdentifier" in body:
+        profile.pop("KmsKeyIdentifier", None)
+        profile.pop("KmsKeyArn", None)
+        if body["KmsKeyIdentifier"]:
+            profile.update(_kms_key_fields(body["KmsKeyIdentifier"]))
     return _json(200, profile)
 
 
@@ -576,7 +620,8 @@ def _next_hosted_version_number(app_id, profile_id):
     return number
 
 
-def _create_hosted_configuration_version(app_id, profile_id, body, content_type, version_label=None):
+def _create_hosted_configuration_version(app_id, profile_id, body, content_type, version_label=None,
+                                         description=None):
     if f"{app_id}/{profile_id}" not in _config_profiles:
         return _error(404, "ResourceNotFoundException", f"Configuration profile {profile_id} not found")
 
@@ -588,7 +633,7 @@ def _create_hosted_configuration_version(app_id, profile_id, body, content_type,
         "VersionNumber": version_number,
         "ContentType": content_type,
         "Content": body,
-        "Description": "",
+        "Description": description or "",
     }
     if version_label:
         record["VersionLabel"] = version_label
@@ -603,6 +648,8 @@ def _create_hosted_configuration_version(app_id, profile_id, body, content_type,
     }
     if version_label:
         resp_headers["VersionLabel"] = version_label
+    if description:
+        resp_headers["Description"] = description
     return 201, resp_headers, body if isinstance(body, bytes) else body.encode("utf-8")
 
 
@@ -621,6 +668,8 @@ def _get_hosted_configuration_version(app_id, profile_id, version_number):
     }
     if record.get("VersionLabel"):
         resp_headers["VersionLabel"] = record["VersionLabel"]
+    if record.get("Description"):
+        resp_headers["Description"] = record["Description"]
     return 200, resp_headers, content if isinstance(content, bytes) else content.encode("utf-8")
 
 
@@ -1058,16 +1107,21 @@ def _is_json(text):
                 return False
 
 
-def _deployed_secret_content(secret_id, location_uri, version, body):
+def _deployed_secret_content(secret_id, location_uri, version, body, role_arn=""):
     """Returns ((content, content_type), None) for the secret version a
     deployment names, or (None, error)."""
     err = _secret_version_length_error(version)
     if err:
         return None, err
     # Another account's secret, and its key, are read in that account.
-    with request_scope(_secret_account(secret_id), get_region()):
+    caller, owner = get_account_id(), _secret_account(secret_id)
+    with request_scope(owner, get_region()):
         secret, secret_version = secretsmanager.resolve_secret_version(secret_id, version)
         customer_key = secret is not None and _is_customer_managed_key(secret.get("KmsKeyId"))
+        denied = (secret is not None and owner != caller and role_arn
+                  and _secret_policy_denies(secret, role_arn))
+    if denied:
+        return None, _retrieval_denied(secret_id, role_arn)
     # A version without a value (MiniStack's Secrets Manager makes one for a
     # secret created without a value) doesn't exist on AWS; the version is
     # checked before the key.
@@ -1155,7 +1209,8 @@ def _start_deployment(app_id, env_id, body):
     secret_id = _secret_id_for_location(location_uri) if isinstance(location_uri, str) else None
     secret_content = None
     if secret_id is not None:
-        secret_content, err = _deployed_secret_content(secret_id, location_uri, version, body)
+        role_arn = _config_profiles[f"{app_id}/{profile_id}"].get("RetrievalRoleArn", "")
+        secret_content, err = _deployed_secret_content(secret_id, location_uri, version, body, role_arn)
         if err:
             return err
 
@@ -1195,6 +1250,9 @@ def _start_deployment(app_id, env_id, body):
     version_label = _hosted_versions.get(f"{app_id}/{profile_id}/{version}", {}).get("VersionLabel")
     if version_label:
         record["VersionLabel"] = version_label
+    if body.get("KmsKeyIdentifier"):
+        record.update(_kms_key_fields(body["KmsKeyIdentifier"]))
+    _apply_tags(_deployment_arn(app_id, env_id, deploy_num), body.get("Tags") or {})
     _add_deployment_event(record, "DEPLOYMENT_STARTED", "USER", "Deployment started", now)
     _deployments[f"{app_id}/{env_id}/{deploy_num}"] = record
     _refresh_environment(app_id, env_id)
@@ -1555,7 +1613,8 @@ async def handle_request(method, path, headers, body_bytes, query_params):
         app_id, profile_id = m.group(1), m.group(2)
         ct = content_type or "application/octet-stream"
         return await _a(_create_hosted_configuration_version(app_id, profile_id, body_bytes, ct,
-                                                             headers.get("versionlabel")))
+                                                             headers.get("versionlabel"),
+                                                             headers.get("description")))
 
     m = re.fullmatch(
         r"/applications/([^/]+)/configurationprofiles/([^/]+)/hostedconfigurationversions/(\d+)",

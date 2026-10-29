@@ -982,7 +982,7 @@ process.stdin.on('end', async () => {
 # ---------------------------------------------------------------------------
 
 
-# A partial ARN: <account>:function:<name>[:<qualifier>]. A function name cannot contain ":".
+# <account>:function:<name>[:<qualifier>]
 _PARTIAL_FUNCTION_ARN_RE = re.compile(r"^(\d{12}):function:([^:]+)(?::([^:]+))?$")
 
 
@@ -1039,7 +1039,7 @@ def _resolve_request_scoped_name(name_or_arn: str) -> str:
 def _resolve_request_scoped_name_and_qualifier(name_or_arn: str) -> tuple[str, str | None]:
     if not name_or_arn:
         return "", None
-    # AWS reads a partial ARN as the full ARN in the caller's region, so the account check below applies to it too.
+    # A partial ARN is the full ARN in the caller's region.
     if _PARTIAL_FUNCTION_ARN_RE.match(name_or_arn):
         name_or_arn = f"arn:aws:lambda:{get_region()}:{name_or_arn}"
     if not name_or_arn.startswith("arn:"):
@@ -7138,6 +7138,25 @@ def _delete_provisioned_concurrency(func_name: str, qualifier: str):
 # ---------------------------------------------------------------------------
 
 
+def esm_source_defaults(is_sqs: bool) -> dict:
+    """What AWS reports for a new mapping by source: a stream mapping has its retry,
+    age, batching and destination settings; an SQS one has none of them and no
+    LastProcessingResult."""
+    if is_sqs:
+        return {"StateTransitionReason": "USER_INITIATED", "BatchSize": 10}
+    return {
+        "StateTransitionReason": "User action",
+        "BatchSize": 100,
+        "LastProcessingResult": "No records processed",
+        "MaximumRetryAttempts": -1,
+        "MaximumRecordAgeInSeconds": -1,
+        "BisectBatchOnFunctionError": False,
+        "ParallelizationFactor": 1,
+        "TumblingWindowInSeconds": 0,
+        "DestinationConfig": {"OnFailure": {}},
+    }
+
+
 def _esm_response(esm: dict, state: str | None = None, modified_now: bool = False) -> dict:
     """Return ESM dict without internal-only fields.
 
@@ -7278,9 +7297,6 @@ def _create_esm(data: dict):
     enabled = data.get("Enabled", True)
     if isinstance(enabled, str):
         enabled = enabled.lower() != "false"
-    # Defaults and fields as AWS answers them: a stream mapping reports its
-    # retry, age, batching and destination settings; an SQS one does not, and
-    # has no LastProcessingResult.
     esm = {
         "UUID": esm_id,
         "EventSourceArn": event_source_arn,
@@ -7288,23 +7304,14 @@ def _create_esm(data: dict):
         "FunctionName": func_name,
         "Qualifier": qualifier,
         "State": "Enabled" if enabled else "Disabled",
-        "StateTransitionReason": "USER_INITIATED" if is_sqs else "User action",
-        "BatchSize": data.get("BatchSize", 10 if is_sqs else 100),
+        **esm_source_defaults(is_sqs),
         "MaximumBatchingWindowInSeconds": data.get("MaximumBatchingWindowInSeconds", 0),
         "LastModified": time.time(),
         "Enabled": enabled,
         "FunctionResponseTypes": data.get("FunctionResponseTypes", []),
     }
-    if not is_sqs:
-        esm.update({
-            "LastProcessingResult": "No records processed",
-            "MaximumRetryAttempts": -1,
-            "MaximumRecordAgeInSeconds": -1,
-            "BisectBatchOnFunctionError": False,
-            "ParallelizationFactor": 1,
-            "TumblingWindowInSeconds": 0,
-            "DestinationConfig": {"OnFailure": {}},
-        })
+    if "BatchSize" in data:
+        esm["BatchSize"] = data["BatchSize"]
     # Optional stream/poll settings — stored on create (previously only picked
     # up on UpdateEventSourceMapping), so GetEventSourceMapping echoes them and
     # the poller can honor MaximumRecordAgeInSeconds + the OnFailure destination.
